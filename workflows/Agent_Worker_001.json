@@ -1,0 +1,136 @@
+{
+  "name": "Agent_Worker_001",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {"item":[{"mode":"everyMinute"}]}
+      },
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, instruction FROM tasks WHERE status='pending' ORDER BY id LIMIT 1;"
+      },
+      "name": "Get Task",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [250, 0],
+      "credentials": {
+        "postgres": {
+          "id": "={{$env.POSTGRES_CREDS_ID}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "http://qdrant:6333/collections/tasks/points/search",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "{\"vector\": \"={{$json[\"instruction\"]}}\",\"limit\":5}"
+      },
+      "name": "Query Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [450, 0]
+    },
+    {
+      "parameters": {
+        "functionCode": "const instruction = items[0].json.instruction;\nconst context = items[1]?.json || '';\nitems[0].json.prompt = `You are an autonomous agent following constitutional safety logic. Instruction:\n${instruction}\nContext:\n${JSON.stringify(context)}`;\nreturn [items[0]];"
+      },
+      "name": "Assemble Prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 0]
+    },
+    {
+      "parameters": {
+        "url": "http://ollama:11434/api/generate",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "{\"model\":\"llama3\",\"prompt\":\"={{$json.prompt}}\"}"
+      },
+      "name": "Run LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [850, 0]
+    },
+    {
+      "parameters": {
+        "functionCode": "const txt = items[0].json.response || items[0].json;\nif ((txt.text || txt).includes('unsafe')) { throw new Error('Unsafe content'); }\nreturn items;"
+      },
+      "name": "Safety Check",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 0]
+    },
+    {
+      "parameters": {
+        "url": "http://ollama:11434/api/embeddings",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "{\"model\":\"llama3\",\"prompt\":\"={{$json.response}}\"}"
+      },
+      "name": "Generate Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1250, 0]
+    },
+    {
+      "parameters": {
+        "url": "http://qdrant:6333/collections/tasks/points",
+        "method": "PUT",
+        "jsonParameters": true,
+        "bodyParametersJson": "{\"points\":[{\"id\":={{$json.id}},\"vector\":={{JSON.stringify($json.embedding)}}}]}"
+      },
+      "name": "Upsert Vector",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1450, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE tasks SET result='={{$json.response}}', status='complete' WHERE id={{$json.id}};"
+      },
+      "name": "Save Result",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1650, 0],
+      "credentials": {
+        "postgres": {
+          "id": "={{$env.POSTGRES_CREDS_ID}}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cron": {
+      "main": [ [ { "node": "Get Task", "type": "main", "index": 0 } ] ]
+    },
+    "Get Task": {
+      "main": [ [ { "node": "Query Context", "type": "main", "index": 0 } ] ]
+    },
+    "Query Context": {
+      "main": [ [ { "node": "Assemble Prompt", "type": "main", "index": 0 } ] ]
+    },
+    "Assemble Prompt": {
+      "main": [ [ { "node": "Run LLM", "type": "main", "index": 0 } ] ]
+    },
+    "Run LLM": {
+      "main": [ [ { "node": "Safety Check", "type": "main", "index": 0 } ] ]
+    },
+    "Safety Check": {
+      "main": [ [ { "node": "Generate Embedding", "type": "main", "index": 0 } ] ]
+    },
+    "Generate Embedding": {
+      "main": [ [ { "node": "Upsert Vector", "type": "main", "index": 0 } ] ]
+    },
+    "Upsert Vector": {
+      "main": [ [ { "node": "Save Result", "type": "main", "index": 0 } ] ]
+    }
+  }
+}
